@@ -4,7 +4,7 @@ opsleuth is a research and interoperability tool. It rewrites the opcode numbers
 
 ## What it does
 
-- Reads Lua 5.1 bytecode files and repairs headers that were changed in simple ways.
+- Reads Lua 5.1 and LuaJIT 2.1 bytecode files and repairs headers that were changed in simple ways.
 - Infers which renumbered opcode corresponds to which standard opcode.
 - Reads opcode name tables that a native library already contains in plain form.
 - Writes standard bytecode for an existing decompiler.
@@ -31,7 +31,7 @@ opsleuth 是研究與互通用的工具：把你手上 Lua 位元碼被改過的
 
 ## 會做的事
 
-- 讀取 Lua 5.1 位元碼，修復被簡單改動的檔頭。
+- 讀取 Lua 5.1 與 LuaJIT 2.1 位元碼，修復被簡單改動的檔頭。
 - 推導被重新編號的 opcode 各自對應哪個標準 opcode。
 - 讀取原生程式庫裡本來就以明文存在的 opcode 名稱表。
 - 輸出標準位元碼，交給現有的反編譯器。

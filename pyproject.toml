@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "opsleuth"
-version = "0.1.0"
+version = "0.2.0"
 description = "Recover the opcode order of Lua bytecode whose opcodes were renumbered"
 readme = "README.md"
 license = "MIT"
@@ -28,6 +28,7 @@ include = ["opsleuth*"]
 
 [tool.setuptools.package-data]
 "opsleuth.lua51" = ["model.json"]
+"opsleuth.luajit" = ["model.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

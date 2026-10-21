@@ -6,14 +6,9 @@ import sys
 from pathlib import Path
 
 from . import __version__
-from .lua51 import opcodes
-from .lua51.chunk import ChunkError, Header, dump, parse
-from .lua51.header import detect
-from .lua51.known import align
-from .lua51.scramble import random_permutation, scramble
-from .lua51.solve import Contradiction, solve
-from .lua51.verify import verify
+from .formats import FORMATS, Loaded, NotBytecode, load, sniff
 from .native import find_opname_tables
+from .solver import Contradiction
 
 MAP_FORMAT = "opsleuth-map"
 
@@ -28,38 +23,51 @@ def _files(paths: list[Path]) -> list[tuple[Path, Path]]:
     return out
 
 
-def _load(paths: list[Path], quiet: bool = False):
+def _load(paths: list[Path], quiet: bool = False,
+          prefer: str | None = None) -> list[tuple[Path, Path, Loaded]]:
     loaded = []
     skipped = 0
     for path, rel in _files(paths):
         try:
-            loaded.append((path, rel, detect(path.read_bytes())))
-        except ChunkError:
+            loaded.append((path, rel, load(path.read_bytes(), prefer)))
+        except NotBytecode:
             skipped += 1
     if skipped and not quiet:
-        print(f"skipped {skipped} file(s) that are not Lua 5.1 chunks", file=sys.stderr)
+        print(f"skipped {skipped} file(s) that are not Lua 5.1 or LuaJIT 2.1 bytecode",
+              file=sys.stderr)
+    return loaded
+
+
+def _one_format(loaded: list[tuple[Path, Path, Loaded]]) -> list[tuple[Path, Path, Loaded]]:
+    counts: dict[str, int] = {}
+    for _, _, item in loaded:
+        counts[item.format.name] = counts.get(item.format.name, 0) + 1
+    if len(counts) > 1:
+        main_format = max(counts, key=counts.get)
+        dropped = len(loaded) - counts[main_format]
+        print(f"mixed bytecode formats; using {counts[main_format]} {main_format} file(s), "
+              f"ignoring {dropped}", file=sys.stderr)
+        loaded = [x for x in loaded if x[2].format.name == main_format]
     return loaded
 
 
 def cmd_detect(args) -> int:
     loaded = _load(args.paths)
-    for path, _, d in loaded:
-        h = d.header
-        ops = sorted({ins.op for fn in d.chunk.functions() for ins in fn.code})
-        status = "standard header" if not d.repairs else "; ".join(d.repairs)
-        print(f"{path}: Lua 5.1, size_t={h.sizeof_size_t}, "
-              f"{'little' if h.little_endian else 'big'}-endian, {len(ops)} opcodes used, {status}")
+    for path, _, item in loaded:
+        ops = sorted({ins.op for fn in item.chunk.functions() for ins in fn.code})
+        status = "standard header" if not item.repairs else "; ".join(item.repairs)
+        print(f"{path}: {item.format.describe(item)}, {len(ops)} opcodes used, {status}")
         if args.verbose:
-            report = verify(d.chunk)
+            report = item.format.verify(item.chunk)
             print("  stock opcode order:", "looks standard" if report.ok else "does not match")
     return 0 if loaded else 1
 
 
-def _native_candidates(lib: Path) -> list[dict[int, int]]:
-    tables = find_opname_tables(lib.read_bytes(), set(opcodes.NAMES))
+def _native_candidates(fmt, lib: Path) -> list[dict[int, int]]:
+    tables = find_opname_tables(lib.read_bytes(), set(fmt.names))
     out = []
     for table in tables:
-        fixed = {i: opcodes.OP[name] for i, name in enumerate(table.names) if name in opcodes.OP}
+        fixed = {i: fmt.op[name] for i, name in enumerate(table.names) if name in fmt.op}
         out.append(fixed)
         print(f"opname table at file offset 0x{table.offset:x}: {len(table.names)} entries",
               file=sys.stderr)
@@ -67,21 +75,23 @@ def _native_candidates(lib: Path) -> list[dict[int, int]]:
 
 
 def cmd_solve(args) -> int:
-    loaded = _load(args.paths)
+    loaded = _one_format(_load(args.paths))
     if not loaded:
-        print("no Lua 5.1 chunks found", file=sys.stderr)
+        print("no Lua bytecode found", file=sys.stderr)
         return 1
-    chunks = [d.chunk for _, _, d in loaded]
+    fmt = loaded[0][2].format
+    chunks = [item.chunk for _, _, item in loaded]
     attempts: list[tuple[dict[int, int] | None, str]] = []
     if args.known:
-        stock = [d.chunk for _, _, d in _load([args.known], quiet=True)]
-        known, matched = align(chunks, stock)
+        stock = [item.chunk for _, _, item in _load([args.known], quiet=True, prefer=fmt.name)
+                 if item.format is fmt]
+        known, matched = fmt.align(chunks, stock)
         print(f"known bytecode: {matched} function(s) matched, {len(known)} opcode(s) fixed",
               file=sys.stderr)
         if known:
             attempts.append((known, "known"))
     if args.lib:
-        attempts.extend((fixed, "native") for fixed in _native_candidates(args.lib))
+        attempts.extend((fixed, "native") for fixed in _native_candidates(fmt, args.lib))
         if not attempts:
             print("no opname table found in the library; solving from bytecode only",
                   file=sys.stderr)
@@ -89,7 +99,7 @@ def cmd_solve(args) -> int:
     solution = None
     for fixed, source in attempts:
         try:
-            solution = solve(chunks, fixed=fixed)
+            solution = fmt.solve(chunks, fixed=fixed)
         except Contradiction as exc:
             print(f"{source} candidate rejected: {exc}", file=sys.stderr)
             continue
@@ -100,15 +110,13 @@ def cmd_solve(args) -> int:
     if solution is None:
         print("no consistent opcode mapping exists", file=sys.stderr)
         return 1
-    header = loaded[0][2].header
     data = {
         "format": MAP_FORMAT,
         "version": 1,
-        "lua": "5.1",
+        "lua": fmt.name,
         "files": len(loaded),
-        "header": {"little_endian": header.little_endian, "sizeof_size_t": header.sizeof_size_t,
-                   "sizeof_number": header.sizeof_number},
-        "ops": [r.to_dict() for r in sorted(solution.ops.values(), key=lambda r: r.game)],
+        "header": fmt.header_info(loaded[0][2]),
+        "ops": [r.to_dict(fmt.names) for r in sorted(solution.ops.values(), key=lambda r: r.game)],
         "ambiguous": [r.game for r in solution.ambiguous()],
     }
     text = json.dumps(data, indent=2)
@@ -116,48 +124,49 @@ def cmd_solve(args) -> int:
         args.output.write_text(text + "\n", "utf-8")
     else:
         print(text)
-    _summary(solution, len(loaded))
+    _summary(fmt, solution, len(loaded))
     return 0
 
 
-def _summary(solution, files: int) -> None:
+def _summary(fmt, solution, files: int) -> None:
     methods: dict[str, int] = {}
     for r in solution.ops.values():
         methods[r.method] = methods.get(r.method, 0) + 1
     parts = ", ".join(f"{n} by {m}" for m, n in sorted(methods.items()))
-    print(f"{len(solution.ops)} opcodes from {files} file(s): {parts}", file=sys.stderr)
+    print(f"{len(solution.ops)} {fmt.label} opcodes from {files} file(s): {parts}", file=sys.stderr)
     for r in solution.ambiguous():
-        chosen = opcodes.NAMES[r.op] if r.op is not None else "?"
-        others = ", ".join(opcodes.NAMES[c] for c in r.candidates if c != r.op)
-        print(f"  low confidence: game {r.game} -> {chosen} (also possible: {others})",
-              file=sys.stderr)
+        chosen = fmt.names[r.op] if r.op is not None else "?"
+        others = [fmt.names[c] for c in r.candidates if c != r.op]
+        listed = ", ".join(others[:3]) + (f" and {len(others) - 3} more" if len(others) > 3 else "")
+        print(f"  low confidence: game {r.game} -> {chosen} (next best: {listed})", file=sys.stderr)
 
 
-def _read_map(path: Path) -> dict[int, int]:
+def _read_map(path: Path):
     data = json.loads(path.read_text("utf-8"))
     if data.get("format") != MAP_FORMAT:
         raise SystemExit(f"{path} is not an opsleuth map")
-    return {int(op["game"]): opcodes.OP[op["op"]] for op in data["ops"] if op["op"]}
+    fmt = FORMATS.get(data.get("lua", "5.1"))
+    if fmt is None:
+        raise SystemExit(f"{path}: unknown bytecode format {data.get('lua')!r}")
+    return fmt, {int(op["game"]): fmt.op[op["op"]] for op in data["ops"] if op["op"]}
 
 
 def cmd_apply(args) -> int:
-    mapping = _read_map(args.map)
-    loaded = _load(args.paths)
+    fmt, mapping = _read_map(args.map)
+    loaded = [x for x in _load(args.paths, prefer=fmt.name) if x[2].format is fmt]
     failures = 0
-    for _, rel, d in loaded:
+    for _, rel, item in loaded:
         unknown = 0
-        for fn in d.chunk.functions():
+        for fn in item.chunk.functions():
             code = []
             for ins in fn.code:
                 if ins.op not in mapping:
                     unknown += 1
                 code.append(ins.with_op(mapping.get(ins.op, ins.op)))
             fn.code = code
-        header = Header(little_endian=d.header.little_endian, sizeof_size_t=d.header.sizeof_size_t,
-                        sizeof_number=d.header.sizeof_number, integral=d.header.integral)
         target = args.output / rel
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(dump(d.chunk, header))
+        target.write_bytes(fmt.dump(item))
         if unknown:
             failures += 1
             print(f"{rel}: {unknown} instruction(s) with unmapped opcodes", file=sys.stderr)
@@ -174,15 +183,17 @@ def cmd_verify(args) -> int:
         print("java not found; skipping decompiler check", file=sys.stderr)
     for path, rel in _files(args.paths):
         total += 1
+        data = path.read_bytes()
+        fmt = sniff(data)
         try:
-            chunk = parse(path.read_bytes())
-        except ChunkError as exc:
+            chunk = fmt.strict_parse(data)
+        except NotBytecode as exc:
             print(f"{rel}: cannot parse with a standard header ({exc})")
             bad += 1
             continue
-        report = verify(chunk)
+        report = fmt.verify(chunk)
         problem = None if report.ok else report.problems[0]
-        if problem is None and java:
+        if problem is None and java and fmt.unluac:
             run = subprocess.run([java, "-jar", str(unluac), str(path)], capture_output=True)
             if run.returncode != 0:
                 problem = "decompiler failed: " + run.stderr.decode(errors="replace").strip()[:200]
@@ -194,19 +205,30 @@ def cmd_verify(args) -> int:
 
 
 def cmd_scramble(args) -> int:
-    perm = random_permutation(args.seed)
+    fmt = None
+    perm: dict[int, int] = {}
     for path, rel in _files(args.paths):
         try:
-            chunk = parse(path.read_bytes())
-        except ChunkError:
+            item = load(path.read_bytes())
+        except NotBytecode:
+            continue
+        if item.repairs:
+            continue
+        if fmt is None:
+            fmt = item.format
+            perm = fmt.permutation(args.seed)
+        elif item.format is not fmt:
             continue
         target = args.output / rel
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(scramble(chunk, perm, strip_debug=args.strip,
-                                    damage_header=args.damage_header, seed=args.seed))
+        target.write_bytes(fmt.scramble(item.chunk, perm, strip_debug=args.strip,
+                                        damage_header=args.damage_header, seed=args.seed))
+    if fmt is None:
+        print("no stock bytecode found", file=sys.stderr)
+        return 1
     if args.answer:
-        answer = {"format": MAP_FORMAT, "version": 1, "lua": "5.1",
-                  "ops": [{"game": g, "op": opcodes.NAMES[s]} for s, g in sorted(perm.items())]}
+        answer = {"format": MAP_FORMAT, "version": 1, "lua": fmt.name,
+                  "ops": [{"game": g, "op": fmt.names[s]} for s, g in sorted(perm.items())]}
         args.answer.write_text(json.dumps(answer, indent=2) + "\n", "utf-8")
     return 0
 
@@ -226,7 +248,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("paths", nargs="+", type=Path)
     p.add_argument("--lib", type=Path, help="native library that embeds the Lua VM")
     p.add_argument("--known", type=Path,
-                   help="stock luac output for some of the same scripts")
+                   help="stock compiler output for some of the same scripts")
     p.add_argument("-o", "--output", type=Path)
     p.set_defaults(func=cmd_solve)
 
@@ -238,7 +260,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("verify", help="check that chunks are consistent stock bytecode")
     p.add_argument("paths", nargs="+", type=Path)
-    p.add_argument("--unluac", help="path to unluac.jar for a decompiler check")
+    p.add_argument("--unluac", help="path to unluac.jar for a Lua 5.1 decompiler check")
     p.set_defaults(func=cmd_verify)
 
     p = sub.add_parser("scramble", help="make test data by renumbering opcodes")
