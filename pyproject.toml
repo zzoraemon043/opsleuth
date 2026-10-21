@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "opsleuth"
+version = "0.1.0"
+description = "Recover the opcode order of Lua bytecode whose opcodes were renumbered"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [{ name = "Oba Yang" }]
+keywords = ["lua", "bytecode", "reverse-engineering", "decompiler", "luac"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Operating System :: OS Independent",
+  "Topic :: Software Development :: Disassemblers",
+]
+
+[project.urls]
+Homepage = "https://github.com/zzoraemon043/opsleuth"
+
+[project.scripts]
+opsleuth = "opsleuth.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["opsleuth*"]
+
+[tool.setuptools.package-data]
+"opsleuth.lua51" = ["model.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py310"
+extend-exclude = [".tools"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
