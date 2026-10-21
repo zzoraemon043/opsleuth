@@ -14,7 +14,7 @@ opsleuth infers the mapping automatically for Lua 5.1 and LuaJIT 2.1. The format
 opsleuth detect  scripts/                         # version, header changes
 opsleuth solve   scripts/ -o map.json             # infer the opcode mapping
 opsleuth apply   scripts/ --map map.json -o fixed/
-opsleuth verify  fixed/ [--unluac unluac.jar]
+opsleuth verify  fixed/ [--unluac unluac.jar] [--decompiler "CMD {}"]
 ```
 
 ### How it works
@@ -23,7 +23,7 @@ opsleuth verify  fixed/ [--unluac unluac.jar]
 2. **Native name table (optional).** `--lib libgame.so` scans an ELF or PE file for an array of pointers to opcode names. Its order is the VM's opcode order. Relocations in position independent code are resolved, and tail-merged strings such as `CALL` inside `TAILCALL` are handled.
 3. **Structural constraints.** Every opcode has operand rules that real compiler output always follows: constant indexes stay below the constant count, `CLOSURE` points at a real prototype, `GETUPVAL` stays below the upvalue count, comparisons are followed by `JMP`, `FORPREP` and `FORLOOP` jump to each other, every function ends in `RETURN`, `VARARG` only appears in vararg functions, and so on. For LuaJIT the operand kinds (string, number, table, prototype, upvalue, jump), loop instructions that must point at each other with the same base register, and the per-function FFI and bit operator flags are checked the same way. Candidates that break a rule on any instruction are removed, and the rules are propagated across all files.
 4. **Learned scoring.** Opcodes that the rules cannot tell apart, mostly the arithmetic group and `UNM`/`NOT`/`LEN`, are scored with a model trained on open source Lua code: operand kinds, constant types, neighbouring instructions and where operands come from and go to. A global assignment picks the best one-to-one mapping, and conflicts with the neighbour rules are resolved by a best-first search over the alternatives.
-5. **Verification.** The rewritten files are checked against the same rules and, if you pass `--unluac`, decompiled.
+5. **Verification.** The rewritten files are checked against the same rules and, if you pass `--unluac` (Lua 5.1) or `--decompiler` with any command such as ljd (`{}` is replaced by the file path), decompiled.
 
 Every opcode in `map.json` says how it was decided (`native`, `constraint` or `score`) and, for scored ones, a margin. Low margins are listed so you know what to double check.
 
@@ -94,7 +94,7 @@ opsleuth 支援 Lua 5.1 和 LuaJIT 2.1，會逐檔判斷格式、自動推出對
 opsleuth detect  scripts/                         # 判斷版本、檔頭改動
 opsleuth solve   scripts/ -o map.json             # 推導 opcode 對應
 opsleuth apply   scripts/ --map map.json -o fixed/
-opsleuth verify  fixed/ [--unluac unluac.jar]
+opsleuth verify  fixed/ [--unluac unluac.jar] [--decompiler "CMD {}"]
 ```
 
 ### 原理
@@ -103,7 +103,7 @@ opsleuth verify  fixed/ [--unluac unluac.jar]
 2. **原生名稱表（選用）**：`--lib libgame.so` 會在 ELF 或 PE 檔裡找指向 opcode 名稱的指標陣列，陣列順序就是 VM 的 opcode 順序。會處理位置無關程式碼的重定位，以及 `CALL` 被合併進 `TAILCALL` 尾端這種字串共用。
 3. **結構約束**：每個 opcode 都有編譯器一定遵守的運算元規則，例如常數索引小於常數數量、`CLOSURE` 指向存在的子函式、比較指令後面一定接 `JMP`、`FORPREP` 和 `FORLOOP` 互相跳轉、每個函式以 `RETURN` 結尾、`VARARG` 只出現在可變參數函式。LuaJIT 另外檢查運算元種類（字串、數字、表、子函式、upvalue、跳躍）、迴圈指令必須互相指向且基底暫存器相同，以及每個函式的 FFI／位元運算旗標。只要有一條指令違反規則，該候選就被排除，並在所有檔案間傳播。
 4. **學習評分**：規則分不出來的（多半是四則運算那組和 `UNM`/`NOT`/`LEN`），用開源 Lua 程式碼訓練的模型評分：運算元種類、常數型別、前後指令、運算元從哪來往哪去。最後用全域指派選出最佳的一對一對應；和前後指令規則衝突時，用最佳優先搜尋改選其他候選。
-5. **驗證**：改寫後的檔案再用同一套規則檢查；加上 `--unluac` 會實際反編譯一次。
+5. **驗證**：改寫後的檔案再用同一套規則檢查；加上 `--unluac`（Lua 5.1）或 `--decompiler`（任何反編譯指令，例如 ljd，`{}` 會換成檔案路徑）會實際反編譯一次。
 
 `map.json` 裡每個 opcode 都寫明怎麼決定的（`native`、`constraint`、`score`），評分決定的會附信心差距，低信心的會另外列出，方便你人工確認。
 

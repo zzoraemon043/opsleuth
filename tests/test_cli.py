@@ -1,6 +1,9 @@
 import json
+import shlex
 import shutil
 import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 
@@ -78,3 +81,14 @@ def test_known_bytecode_fixes_opcodes(tmp_path):
     assert {o["game"]: o["op"] for o in ops} == {g: truth[g] for g in (o["game"] for o in ops)}
     known_ops = {o["op"] for o in ops if o["method"] == "known"}
     assert {"POW", "MOD", "DIV", "MUL", "UNM"} <= known_ops
+
+
+def test_verify_runs_a_decompiler_command(tmp_path):
+    ok = tmp_path / "ok.py"
+    ok.write_text("import sys\nopen(sys.argv[1], 'rb').read()\n")
+    fail = tmp_path / "fail.py"
+    fail.write_text("import sys\nsys.exit('cannot decompile')\n")
+    python = shlex.quote(Path(sys.executable).as_posix())
+    for folder in (DATA / "luac51", DATA / "luajit"):
+        assert main(["verify", str(folder), "--decompiler", f"{python} {ok.as_posix()} {{}}"]) == 0
+        assert main(["verify", str(folder), "--decompiler", f"{python} {fail.as_posix()}"]) == 1

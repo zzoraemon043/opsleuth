@@ -1,5 +1,6 @@
 import argparse
 import json
+import shlex
 import shutil
 import subprocess
 import sys
@@ -174,13 +175,31 @@ def cmd_apply(args) -> int:
     return 1 if failures else 0
 
 
+def _decompile(command: list[str], path: Path) -> str | None:
+    if "{}" in command:
+        argv = [str(path) if part == "{}" else part for part in command]
+    else:
+        argv = [*command, str(path)]
+    try:
+        run = subprocess.run(argv, capture_output=True)
+    except OSError as exc:
+        return f"decompiler could not start: {exc}"
+    if run.returncode != 0:
+        return "decompiler failed: " + run.stderr.decode(errors="replace").strip()[:200]
+    return None
+
+
 def cmd_verify(args) -> int:
     bad = 0
     total = 0
-    unluac = Path(args.unluac) if args.unluac else None
-    java = shutil.which("java") if unluac else None
-    if unluac and not java:
-        print("java not found; skipping decompiler check", file=sys.stderr)
+    unluac = None
+    if args.unluac:
+        java = shutil.which("java")
+        if java:
+            unluac = [java, "-jar", str(Path(args.unluac)), "{}"]
+        else:
+            print("java not found; skipping the unluac check", file=sys.stderr)
+    decompiler = shlex.split(args.decompiler) if args.decompiler else None
     for path, rel in _files(args.paths):
         total += 1
         data = path.read_bytes()
@@ -193,10 +212,9 @@ def cmd_verify(args) -> int:
             continue
         report = fmt.verify(chunk)
         problem = None if report.ok else report.problems[0]
-        if problem is None and java and fmt.unluac:
-            run = subprocess.run([java, "-jar", str(unluac), str(path)], capture_output=True)
-            if run.returncode != 0:
-                problem = "decompiler failed: " + run.stderr.decode(errors="replace").strip()[:200]
+        command = decompiler or (unluac if fmt.unluac else None)
+        if problem is None and command:
+            problem = _decompile(command, path)
         if problem:
             bad += 1
             print(f"{rel}: {problem}")
@@ -261,6 +279,9 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("verify", help="check that chunks are consistent stock bytecode")
     p.add_argument("paths", nargs="+", type=Path)
     p.add_argument("--unluac", help="path to unluac.jar for a Lua 5.1 decompiler check")
+    p.add_argument("--decompiler", help=(
+        "decompiler command run on every file, for example 'python ljd/main.py --file {}'; "
+        "{} is replaced by the file path, or the path is appended"))
     p.set_defaults(func=cmd_verify)
 
     p = sub.add_parser("scramble", help="make test data by renumbering opcodes")
