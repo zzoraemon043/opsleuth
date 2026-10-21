@@ -10,6 +10,8 @@ Some programs ship Lua bytecode built by a modified VM: the opcode numbers are s
 
 opsleuth infers the mapping automatically for Lua 5.1 and LuaJIT 2.1. The format is detected per file.
 
+**Try it in your browser:** https://zzoraemon043.github.io/opsleuth/ (runs locally with Pyodide, nothing is uploaded).
+
 ```
 opsleuth detect  scripts/                         # version, header changes
 opsleuth solve   scripts/ -o map.json             # infer the opcode mapping
@@ -89,6 +91,8 @@ Python 3.10 or newer, no dependencies.
 有些程式附帶的 Lua 位元碼是用改過的 VM 編譯的：opcode 編號被打亂、檔頭被改，`unluac`、`luadec`、`ljd` 這類工具就讀不了。手動還原得每次都逆向一次 VM。
 
 opsleuth 支援 Lua 5.1 和 LuaJIT 2.1，會逐檔判斷格式、自動推出對應關係，再輸出標準位元碼交給你原本用的反編譯器。
+
+**線上試用：** https://zzoraemon043.github.io/opsleuth/ （用 Pyodide 在瀏覽器內執行，檔案不會上傳）。
 
 ```
 opsleuth detect  scripts/                         # 判斷版本、檔頭改動

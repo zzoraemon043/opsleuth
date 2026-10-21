@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>opsleuth demo</title>
+<meta name="description" content="Recover renumbered Lua 5.1 and LuaJIT 2.1 opcodes in your browser.">
+<style>
+:root {
+  --bg: #f6f7f9; --panel: #ffffff; --text: #1d2330; --muted: #5d6675; --line: #dde1e7;
+  --accent: #2f6fdb; --accent-text: #ffffff; --warn-bg: #fff4d6; --warn: #8a5a00; --ok: #1d7a46;
+  --code: #eef1f5;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #12151b; --panel: #1a1f27; --text: #e5e9f0; --muted: #98a2b3; --line: #2c333f;
+    --accent: #6d9cf0; --accent-text: #0d1117; --warn-bg: #3a2f12; --warn: #f0c060; --ok: #5cc98a;
+    --code: #232a35;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text);
+  font: 15px/1.6 system-ui, -apple-system, "Segoe UI", "Microsoft JhengHei", sans-serif; }
+main { max-width: 960px; margin: 0 auto; padding: 32px 16px 64px; }
+h1 { margin: 0; font-size: 28px; }
+h2 { font-size: 18px; margin: 28px 0 10px; }
+p { margin: 6px 0; }
+a { color: var(--accent); }
+.muted { color: var(--muted); }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 18px; margin-top: 18px; }
+.drop { border: 2px dashed var(--line); border-radius: 10px; padding: 28px 16px; text-align: center; cursor: pointer; }
+.drop.over { border-color: var(--accent); }
+.row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 14px; }
+button { font: inherit; border: 1px solid var(--line); background: var(--panel); color: var(--text);
+  border-radius: 8px; padding: 7px 14px; cursor: pointer; }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+button:disabled { opacity: .5; cursor: default; }
+code { background: var(--code); padding: 1px 5px; border-radius: 4px; font-size: 13px; }
+.status { margin-top: 12px; min-height: 1.6em; }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+.stat { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
+.stat b { display: block; font-size: 22px; }
+.table-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
+th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+tr.low td { background: var(--warn-bg); }
+.tag { font-size: 12px; padding: 1px 6px; border-radius: 4px; border: 1px solid currentColor; }
+.tag.low { color: var(--warn); }
+.tag.ok { color: var(--ok); }
+footer { margin-top: 40px; font-size: 13px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>opsleuth</h1>
+  <p class="muted">Recover the opcode order of Lua 5.1 and LuaJIT 2.1 bytecode whose opcodes were renumbered.
+    Everything runs in your browser with Pyodide; files are not uploaded.</p>
+
+  <div class="panel">
+    <div class="drop" id="drop" tabindex="0">
+      <p><b>Drop bytecode files or a .zip here</b>, or click to choose files.</p>
+      <p class="muted">More files from the same program give a better answer.</p>
+      <input type="file" id="files" multiple hidden>
+    </div>
+    <div class="row">
+      <span class="muted">No files at hand?</span>
+      <button data-sample="luajit">LuaJIT sample</button>
+      <button data-sample="lua51">Lua 5.1 sample</button>
+    </div>
+    <div class="status muted" id="status">Loading Python…</div>
+  </div>
+
+  <section id="result" hidden>
+    <h2>Result</h2>
+    <div class="stats" id="stats"></div>
+    <div class="row"><button class="primary" id="download">Download restored files</button>
+      <span class="muted">Contains stock bytecode and <code>map.json</code>.</span></div>
+    <h2>Opcode mapping</h2>
+    <p class="muted">Low confidence rows are listed first. Check those before trusting the decompiled code.</p>
+    <div class="panel table-wrap"><table>
+      <thead><tr><th>Game opcode</th><th>Stock opcode</th><th>Decided by</th><th>Uses</th><th>Next best</th></tr></thead>
+      <tbody id="ops"></tbody>
+    </table></div>
+    <h2>Files</h2>
+    <div class="panel table-wrap"><table>
+      <thead><tr><th>File</th><th>Format</th><th>Header</th></tr></thead>
+      <tbody id="filelist"></tbody>
+    </table></div>
+  </section>
+
+  <footer class="muted">
+    <a href="https://github.com/zzoraemon043/opsleuth">Source and command line tool</a> ·
+    Use it only on files you have the right to analyse. It does not decrypt anything.
+  </footer>
+</main>
+<script src="https://cdn.jsdelivr.net/pyodide/v0.26.4/full/pyodide.js"></script>
+<script>
+const statusEl = document.getElementById("status");
+const buttons = [...document.querySelectorAll("button[data-sample]")];
+let py = null;
+
+function setStatus(text) { statusEl.textContent = text; }
+function busy(on) { buttons.forEach(b => b.disabled = on); }
+
+async function boot() {
+  busy(true);
+  py = await loadPyodide();
+  const pkg = await (await fetch("opsleuth.zip")).arrayBuffer();
+  py.unpackArchive(pkg, "zip", { extractDir: "/home/pyodide" });
+  py.FS.writeFile("/home/pyodide/app.py", await (await fetch("app.py")).text());
+  py.runPython("import sys; sys.path.insert(0, '/home/pyodide'); import app");
+  busy(false);
+  setStatus("Ready.");
+}
+
+function resetInput() {
+  py.runPython("import shutil, os; shutil.rmtree('/in', ignore_errors=True); os.makedirs('/in')");
+}
+
+async function addFile(name, buffer) {
+  const bytes = new Uint8Array(buffer);
+  if (name.toLowerCase().endsWith(".zip")) {
+    py.unpackArchive(bytes, "zip", { extractDir: "/in" });
+  } else {
+    py.FS.writeFile("/in/" + name.replace(/[\\/]/g, "_"), bytes);
+  }
+}
+
+async function run(label) {
+  setStatus(`Solving ${label}…`);
+  await new Promise(r => setTimeout(r, 30));
+  const started = performance.now();
+  const data = JSON.parse(py.runPython("app.analyse('/in')"));
+  if (data.error) { setStatus(data.error); document.getElementById("result").hidden = true; return; }
+  render(data, (performance.now() - started) / 1000);
+}
+
+function cell(text) { const td = document.createElement("td"); td.textContent = text; return td; }
+
+function render(data, seconds) {
+  const low = data.ops.filter(o => o.low).length;
+  const stats = [
+    ["Format", data.format], ["Files", data.files.length], ["Opcodes", data.ops.length],
+    ["Low confidence", low], ["Time", seconds.toFixed(1) + " s"],
+  ];
+  const statsEl = document.getElementById("stats");
+  statsEl.replaceChildren(...stats.map(([k, v]) => {
+    const d = document.createElement("div"); d.className = "stat";
+    d.innerHTML = `<span class="muted"></span><b></b>`;
+    d.firstChild.textContent = k; d.lastChild.textContent = v; return d;
+  }));
+  const ops = document.getElementById("ops");
+  ops.replaceChildren(...data.ops.map(o => {
+    const tr = document.createElement("tr"); if (o.low) tr.className = "low";
+    tr.append(cell(o.game), cell(o.op ?? "?"));
+    const how = cell(""); const tag = document.createElement("span");
+    tag.className = "tag " + (o.low ? "low" : "ok");
+    tag.textContent = o.low ? `score, margin ${o.margin ?? "–"}` : o.method;
+    how.append(tag);
+    tr.append(how, cell(o.count), cell(o.low ? o.next.join(", ") : ""));
+    return tr;
+  }));
+  const files = document.getElementById("filelist");
+  files.replaceChildren(...data.files.map(f => {
+    const tr = document.createElement("tr");
+    tr.append(cell(f.name), cell(f.format), cell(f.repairs.length ? f.repairs.join("; ") : "standard"));
+    return tr;
+  }));
+  document.getElementById("result").hidden = false;
+  const notes = [];
+  if (data.skipped.length) notes.push(`Skipped ${data.skipped.length} file(s) that are not bytecode.`);
+  if (data.ignored) notes.push(`Ignored ${data.ignored} file(s) in another bytecode format.`);
+  if (data.files.length < 50 && low) notes.push("With few files many opcodes stay uncertain; add more files from the same program.");
+  setStatus(["Done.", ...notes].join(" "));
+}
+
+document.getElementById("download").onclick = () => {
+  const bytes = py.FS.readFile("/tmp/restored.zip");
+  const url = URL.createObjectURL(new Blob([bytes], { type: "application/zip" }));
+  const a = document.createElement("a"); a.href = url; a.download = "opsleuth-restored.zip"; a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+};
+
+buttons.forEach(b => b.onclick = async () => {
+  busy(true);
+  try {
+    resetInput();
+    const name = b.dataset.sample;
+    await addFile(name + ".zip", await (await fetch(`samples/${name}.zip`)).arrayBuffer());
+    await run("the " + b.textContent);
+  } finally { busy(false); }
+});
+
+const drop = document.getElementById("drop");
+const input = document.getElementById("files");
+async function takeFiles(list) {
+  if (!py || !list.length) return;
+  busy(true);
+  try {
+    resetInput();
+    for (const f of list) await addFile(f.name, await f.arrayBuffer());
+    await run(`${list.length} file(s)`);
+  } finally { busy(false); }
+}
+drop.onclick = () => input.click();
+drop.onkeydown = e => { if (e.key === "Enter" || e.key === " ") input.click(); };
+input.onchange = () => takeFiles([...input.files]);
+drop.ondragover = e => { e.preventDefault(); drop.classList.add("over"); };
+drop.ondragleave = () => drop.classList.remove("over");
+drop.ondrop = e => { e.preventDefault(); drop.classList.remove("over"); takeFiles([...e.dataTransfer.files]); };
+
+boot().then(() => {
+  const sample = new URLSearchParams(location.search).get("sample");
+  const button = buttons.find(b => b.dataset.sample === sample);
+  if (button) button.click();
+}).catch(err => setStatus("Could not start Python: " + err));
+</script>
+</body>
+</html>
